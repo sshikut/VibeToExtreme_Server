@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="VibeToExtreme_Server.vcxproj" />
+  <Project Path="VibeToExtreme_Server.vcxproj" Id="cec333bd-de3c-4f23-951e-acc48923b106" />
 </Solution>
