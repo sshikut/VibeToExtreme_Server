@@ -1,6 +1,36 @@
 #include "NetworkCore.h"
 #include <iostream>
 #include <stdexcept>
+#include <fstream>
+#include <string>
+
+// OS의 에러 코드를 사람이 읽을 수 있는 문자열로 번역해 주는 마법의 함수
+std::string GetWindowsErrorMessage(int errorCode) {
+    if (errorCode == 0) return "에러 없음";
+
+    char* errorText = nullptr;
+    ::FormatMessageA(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+        NULL,
+        errorCode,
+        MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
+        (LPSTR)&errorText,
+        0,
+        NULL
+    );
+
+    if (errorText) {
+        std::string result(errorText);
+        ::LocalFree(errorText); // 메모리 누수 방지 (매우 중요!)
+
+        // 문자열 끝의 줄바꿈 문자 제거
+        while (!result.empty() && (result.back() == '\n' || result.back() == '\r')) {
+            result.pop_back();
+        }
+        return result;
+    }
+    return "알 수 없는 에러 (코드: " + std::to_string(errorCode) + ")";
+}
 
 NetworkCore::NetworkCore()
     : m_iocpHandle(NULL), m_listenSocket(INVALID_SOCKET), m_running(false) {
@@ -77,13 +107,70 @@ void NetworkCore::AcceptThreadMain() {
         session->SetSocket(clientSocket);
         std::cout << "🎉 접속 성공! 세션 인덱스: " << session->GetSessionId() << std::endl;
 
-        // TODO: 여기서 CreateIoCompletionPort로 IOCP 연결
+        // 세 번째 인자((ULONG_PTR)session)는 워커 스레드에게 "이 편지는 몇 번 방 손님이 보낸 거야"라고 알려주는 이름표(Key)입니다.
+        ::CreateIoCompletionPort((HANDLE)clientSocket, m_iocpHandle, (ULONG_PTR)session, 0);
+
+        // 세션이 보내는 편지 받기
+        session->PostRecv();
     }
 }
 
 void NetworkCore::WorkerThreadMain() {
+    DWORD bytesTransferred = 0;
+    ULONG_PTR completionKey = 0;
+    LPOVERLAPPED overlapped = nullptr;
+
     while (m_running) {
-        // TODO: GetQueuedCompletionStatus() 로직
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        // 우체국(IOCP)에서 편지가 오길 기다립니다.
+        BOOL result = ::GetQueuedCompletionStatus(
+            m_iocpHandle,
+            &bytesTransferred,
+            &completionKey,
+            &overlapped,
+            INFINITE
+        );
+
+        if (!result && overlapped == nullptr) {
+            // 우체국이 닫혔습니다. 스레드를 조용히 퇴근시킵니다.
+            break;
+        }
+
+        // 이름표를 보고 어떤 세션인지 확인합니다.
+        Session* session = reinterpret_cast<Session*>(completionKey);
+        OverlappedContext* context = reinterpret_cast<OverlappedContext*>(overlapped);
+
+        // 클라이언트가 강제로 랜선을 뽑거나 접속을 종료했을 때!
+        if (!result || bytesTransferred == 0) {
+            if (session) {
+                int sessionId = session->GetSessionId();
+                std::ofstream logFile("server_log.txt", std::ios::app);
+
+                if (result && bytesTransferred == 0) {
+                    // [상황 A] OS가 대신 닫아주거나, 정상 로그아웃한 경우
+                    std::cout << "[정상 종료] 세션 " << sessionId << " 연결 해제." << std::endl;
+                    if (logFile.is_open()) logFile << "[INFO] Session " << sessionId << " Gracefully Disconnected.\n";
+                }
+                else {
+                    // [상황 B] 진짜 비정상 끊김 (랜선 뽑힘 등)
+                    // ★ WSAGetLastError가 아니라 GetLastError를 써야 합니다!
+                    int errCode = ::GetLastError();
+                    std::string errMsg = GetWindowsErrorMessage(errCode);
+
+                    std::cout << "[비정상 종료] 세션 " << sessionId << " | 사유: " << errMsg << std::endl;
+                    if (logFile.is_open()) logFile << "-> FATAL ERROR: " << errMsg << " (Code: " << errCode << ")\n";
+                }
+                if (logFile.is_open()) logFile.close();
+
+                m_sessionManager->Release(session);
+                ::closesocket(session->GetSocket());
+            }
+            continue;
+        }
+
+        // [핵심] 유니티에서 보낸 패킷 타입 확인
+        PacketType* type = reinterpret_cast<PacketType*>(context->buffer);
+
+        // 다시 다음 편지를 받을 준비 (WSARecv 재호출 로직 생략)
     }
 }
+
