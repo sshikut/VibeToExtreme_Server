@@ -1,8 +1,11 @@
 import streamlit as st
-import psutil
+import psutil 
 import requests
 import os
 import glob
+import pandas as pd
+import time
+import altair as alt
 
 # ==========================================
 # ⚙️ [초기 설정] 경로 및 환경 변수 (★여기에 경로 코드가 들어갑니다!)
@@ -29,12 +32,81 @@ st.title("🚀 VibeToExtreme 통합 관리 대시보드")
 # ==========================================
 # 🗂️ 탭(Tab) UI 생성
 # ==========================================
-tab1, tab2, tab3 = st.tabs(["🚨 실시간 크래시 감시", "💬 AI 코드 어시스턴트", "📚 AI 자동 산출물 (구조도)"])
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📊 실시간 리소스 모니터링", 
+    "🚨 실시간 크래시 감시", 
+    "💬 AI 코드 어시스턴트", 
+    "📚 AI 자동 산출물 (구조도)"
+])
 
 # ------------------------------------------
-# [TAB 1] 실시간 크래시 감시 (기존 기능)
+# [TAB 1] 실시간 리소스 모니터링 (Grafana 스타일)
 # ------------------------------------------
 with tab1:
+    st.subheader("📊 서버 실시간 관제 센터")
+    
+    # 상단에 요약 지표(Metric) 배치
+    col1, col2, col3 = st.columns(3)
+    cpu_metric = col1.empty()
+    mem_metric = col2.empty()
+    session_metric = col3.empty()
+
+    # 관제 방식 선택 (라디오 버튼)
+    chart_type = st.radio("📈 차트 스타일 선택", ["Line Chart (추세 확인)", "Bar Chart (현재 부하량)"], horizontal=True)
+    
+    chart_placeholder = st.empty()
+    
+    if st.button("🔴 실시간 관제 시작"):
+        cpu_history = []
+        mem_history = []
+        
+        while True:
+            cpu = psutil.cpu_percent()
+            mem = psutil.virtual_memory().percent
+            
+            # [세션 수 파악 로직] 
+            # 7777 포트로 연결된 클라이언트의 수를 OS에 직접 물어봅니다.
+            connections = psutil.net_connections()
+            session_count = len([conn for conn in connections if conn.laddr.port == 7777 and conn.status == 'ESTABLISHED'])
+            
+            # 메트릭 업데이트
+            cpu_metric.metric("CPU 점유율", f"{cpu}%")
+            mem_metric.metric("메모리 점유율", f"{mem}%")
+            session_metric.metric("현재 세션 수", f"{session_count} 명", delta=session_count - 500 if session_count > 500 else 0)
+
+            # 데이터 축적 (선 그래프용 역사 기록)
+            cpu_history.append(cpu)
+            mem_history.append(mem)
+            if len(cpu_history) > 50: cpu_history.pop(0)
+            if len(mem_history) > 50: mem_history.pop(0)
+
+            # 차트를 그릴 영역
+            with chart_placeholder.container():
+                if "Line" in chart_type:
+                    # [선 그래프] 과거부터 지금까지의 흐름(History)을 모두 줍니다.
+                    df_line = pd.DataFrame({"CPU (%)": cpu_history, "RAM (%)": mem_history})
+                    st.line_chart(df_line, height=300)
+                else:
+                    # [막대 그래프] ★ 실무형 Altair 커스텀 차트
+                    df_bar = pd.DataFrame({
+                        "항목": ["🖥️ CPU", "💾 RAM"],
+                        "사용량 (%)": [cpu, mem]
+                    })
+                    
+                    # 막대 굵기(size)와 Y축 범위(0~100)를 강제 고정합니다.
+                    chart = alt.Chart(df_bar).mark_bar(size=80).encode(
+                        x=alt.X('항목', axis=alt.Axis(labelAngle=0, title=None)), # 글씨가 세로로 눕는 것 방지
+                        y=alt.Y('사용량 (%)', scale=alt.Scale(domain=[0, 100]))   # Y축을 항상 100%로 고정!
+                    ).properties(height=300)
+                    
+                    st.altair_chart(chart, use_container_width=True)
+            
+            time.sleep(0.5)
+
+# ------------------------------------------
+# [TAB 2] 실시간 크래시 감시 (기존 기능)
+# ------------------------------------------
+with tab2:
     if st.button("🔄 서버 상태 새로고침"):
         st.rerun()
 
@@ -72,9 +144,9 @@ with tab1:
             st.info(st.session_state.ai_report)
 
 # ------------------------------------------
-# [TAB 2] AI 코드 어시스턴트 (새로운 종합 관리 기능)
+# [TAB 3] AI 코드 어시스턴트 (새로운 종합 관리 기능)
 # ------------------------------------------
-with tab2:
+with tab3:
     st.subheader("🤖 내 프로젝트 로컬 AI 멘토")
     st.markdown("프로젝트 내의 C++ 파일을 선택하고, 궁금한 점이나 최적화 방안을 질문하세요.")
 
@@ -121,9 +193,9 @@ with tab2:
                     st.error("Ollama 서버에 연결할 수 없습니다.")
 
 # ------------------------------------------
-# [TAB 3] AI 프로젝트 자동 문서화 (전체 숲 보기)
+# [TAB 4] AI 프로젝트 자동 문서화 (전체 숲 보기)
 # ------------------------------------------
-with tab3:
+with tab4:
     st.subheader("📚 AI 자동 생성 프로젝트 명세서")
     st.markdown("로컬 AI가 전체 C++ 소스 코드를 순회하며 아키텍처 문서를 자동으로 작성합니다.")
     
