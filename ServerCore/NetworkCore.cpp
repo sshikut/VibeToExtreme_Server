@@ -88,6 +88,19 @@ void NetworkCore::StartServer(uint16_t port) {
     for (auto& t : m_workerThreads) {
         t.detach();
     }
+
+    // 5. 내부 상태 모니터링 (하트비트) 스레드 추가 ★
+    std::thread([this]() {
+        while (m_running) {
+            // 3초마다 현재 남은 빈방 갯수를 콘솔에 출력합니다.
+            size_t freeCount = m_sessionManager->GetAvailableSessionCount();
+            std::cout << "\n=======================================" << std::endl;
+            std::cout << "[서버 상태] 남은 세션(빈방): " << freeCount << " / 10000" << std::endl;
+            std::cout << "=======================================\n" << std::endl;
+
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+        }
+        }).detach();
 }
 
 void NetworkCore::AcceptThreadMain() {
@@ -105,13 +118,23 @@ void NetworkCore::AcceptThreadMain() {
         }
 
         session->SetSocket(clientSocket);
-        std::cout << "🎉 접속 성공! 세션 인덱스: " << session->GetSessionId() << std::endl;
 
-        // 세 번째 인자((ULONG_PTR)session)는 워커 스레드에게 "이 편지는 몇 번 방 손님이 보낸 거야"라고 알려주는 이름표(Key)입니다.
         ::CreateIoCompletionPort((HANDLE)clientSocket, m_iocpHandle, (ULONG_PTR)session, 0);
 
-        // 세션이 보내는 편지 받기
-        session->PostRecv();
+        // ★ 핵심 방어막: PostRecv가 즉시 실패했는지 확인!
+        bool isSuccess = session->PostRecv();
+
+        if (!isSuccess) {
+            // 악성 봇이 접속하자마자 끊고 도망간 최악의 상황!
+            // 워커 스레드로 못 넘어가니, 여기서 직접 방 열쇠를 뺏어서 반납해야 합니다.
+            std::cout << "🚨 [경고] 접속 직후 연결 끊김 (유령 세션 방어!). 세션 즉시 반납!" << std::endl;
+            m_sessionManager->Release(session);
+            ::closesocket(clientSocket);
+        }
+        else {
+            // 정상적으로 대기열에 들어간 경우에만 성공으로 취급
+            std::cout << "🎉 접속 및 수신 대기 성공! 세션 인덱스: " << session->GetSessionId() << std::endl;
+        }
     }
 }
 
@@ -141,21 +164,22 @@ void NetworkCore::WorkerThreadMain() {
 
         // 클라이언트가 강제로 랜선을 뽑거나 접속을 종료했을 때!
         if (!result || bytesTransferred == 0) {
+
+            // ★ 에러 코드가 다른 함수(ofstream 등)에 의해 오염되기 전에 즉시 구출합니다!
+            int errCode = (!result) ? ::WSAGetLastError() : 0;
+
             if (session) {
                 int sessionId = session->GetSessionId();
                 std::ofstream logFile("server_log.txt", std::ios::app);
 
                 if (result && bytesTransferred == 0) {
-                    // [상황 A] OS가 대신 닫아주거나, 정상 로그아웃한 경우
+                    // [정상 로그아웃]
                     std::cout << "[정상 종료] 세션 " << sessionId << " 연결 해제." << std::endl;
                     if (logFile.is_open()) logFile << "[INFO] Session " << sessionId << " Gracefully Disconnected.\n";
                 }
                 else {
-                    // [상황 B] 진짜 비정상 끊김 (랜선 뽑힘 등)
-                    // ★ WSAGetLastError가 아니라 GetLastError를 써야 합니다!
-                    int errCode = ::GetLastError();
+                    // [비정상 강제 종료] 오염되지 않은 순수한 errCode를 사용합니다!
                     std::string errMsg = GetWindowsErrorMessage(errCode);
-
                     std::cout << "[비정상 종료] 세션 " << sessionId << " | 사유: " << errMsg << std::endl;
                     if (logFile.is_open()) logFile << "-> FATAL ERROR: " << errMsg << " (Code: " << errCode << ")\n";
                 }
@@ -170,7 +194,25 @@ void NetworkCore::WorkerThreadMain() {
         // [핵심] 유니티에서 보낸 패킷 타입 확인
         PacketType* type = reinterpret_cast<PacketType*>(context->buffer);
 
-        // 다시 다음 편지를 받을 준비 (WSARecv 재호출 로직 생략)
+        // ★ 워커 스레드의 마지막 방어막: 처리 끝났으니 다음 편지 내놔!
+        bool isSuccess = session->PostRecv();
+
+        if (!isSuccess) {
+            // 통신 중에 악성 봇이 강제로 연결을 끊고 도망갔다!
+            int sessionId = session->GetSessionId();
+            std::cout << "🚨 [경고] 워커 스레드 재수신 실패! 세션 " << sessionId << " 즉시 반납!" << std::endl;
+
+            // 파일 로깅 (선택 사항)
+            std::ofstream logFile("server_log.txt", std::ios::app);
+            if (logFile.is_open()) {
+                logFile << "-> FATAL ERROR: 재수신(PostRecv) 실패에 의한 강제 반납. (Session: " << sessionId << ")\n";
+                logFile.close();
+            }
+
+            // 남은 방 열쇠 강제 회수
+            m_sessionManager->Release(session);
+            ::closesocket(session->GetSocket());
+        }
     }
 }
 

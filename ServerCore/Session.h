@@ -32,7 +32,9 @@ public:
     void OnReceive(int bytesTransferred);
     OverlappedContext& GetReceiveContext() { return m_recvContext; }
 
-    void PostRecv() {
+    bool IsFree() const { return !m_inUse; }
+
+    bool PostRecv() {
         DWORD recvBytes = 0;
         DWORD flags = 0;
 
@@ -45,8 +47,10 @@ public:
         if (::WSARecv(m_socket, &m_recvContext.wsaBuf, 1, &recvBytes, &flags, &m_recvContext.overlapped, nullptr) == SOCKET_ERROR) {
             if (::WSAGetLastError() != WSA_IO_PENDING) {
                 std::cout << "🚨 WSARecv 에러 발생: " << ::WSAGetLastError() << std::endl;
+                return false; // ★ 핵심: 즉시 에러가 났으니 Accept 스레드에게 실패했다고 알림!
             }
         }
+        return true; // ★ 무사히 대기열에 들어갔거나, 즉시 완료됨
     }
 
 private:

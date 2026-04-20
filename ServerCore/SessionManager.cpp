@@ -36,6 +36,11 @@ Session* SessionManager::Acquire() {
 void SessionManager::Release(Session* session) {
     std::lock_guard<std::mutex> lock(m_mutex);
 
+    // 이미 누군가가 반납해서 빈방(Free)이 된 상태라면, 두 번 반납하지 않고 무시합니다.
+    if (session->IsFree()) {
+        return;
+    }
+
     session->Reset();
     int returnedIndex = session->GetSessionId();
     m_freeIndices.push_back(returnedIndex);
