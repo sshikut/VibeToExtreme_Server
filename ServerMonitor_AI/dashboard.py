@@ -6,147 +6,168 @@ import glob
 import pandas as pd
 import time
 import altair as alt
+import datetime
+import threading # ★ 추가: AI를 백그라운드에서 돌리기 위한 스레드
+from streamlit.runtime.scriptrunner import add_script_run_ctx # ★ 추가: 스레드 경고 방지
 
 # ==========================================
-# ⚙️ [초기 설정] 경로 및 환경 변수 (★여기에 경로 코드가 들어갑니다!)
+# ⚙️ [초기 설정] 경로 및 환경 변수
 # ==========================================
-# 🚨 본인의 실제 C++ 프로젝트 폴더 절대 경로로 반드시 수정하세요!
 SERVER_PROJECT_PATH = r"D:\Projects\VibeToExtreme\VibeToExtreme_Server" 
-
-# 로그 파일과 코어 파일의 경로를 자동 조합합니다.
 LOG_FILE_PATH = os.path.join(SERVER_PROJECT_PATH, "server_log.txt")
 NETWORK_CODE_PATH = os.path.join(SERVER_PROJECT_PATH, "NetworkCore.cpp")
 
 st.set_page_config(page_title="VibeToExtreme 프로젝트 관제소", page_icon="🚀", layout="wide")
 
-# 세션 상태 초기화 (채팅 기록 저장용 추가)
-if "ai_report" not in st.session_state:
-    st.session_state.ai_report = None
-if "last_log" not in st.session_state:
-    st.session_state.last_log = ""
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+# ==========================================
+# 🧠 세션 상태(State) 초기화
+# ==========================================
+if "ai_report" not in st.session_state: st.session_state.ai_report = None
+if "last_analyzed_log" not in st.session_state: st.session_state.last_analyzed_log = ""
+if "chat_history" not in st.session_state: st.session_state.chat_history = []
+if "is_monitoring" not in st.session_state: st.session_state.is_monitoring = False
+if "cpu_history" not in st.session_state: st.session_state.cpu_history = []
+if "mem_history" not in st.session_state: st.session_state.mem_history = []
+if "chart_style" not in st.session_state: st.session_state.chart_style = "Line Chart (추세)"
+if "ai_is_analyzing" not in st.session_state: st.session_state.ai_is_analyzing = False # ★ AI 분석 상태 추가
 
 st.title("🚀 VibeToExtreme 통합 관리 대시보드")
 
-# ==========================================
-# 🗂️ 탭(Tab) UI 생성
-# ==========================================
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📊 실시간 리소스 모니터링", 
-    "🚨 실시간 크래시 감시", 
-    "💬 AI 코드 어시스턴트", 
-    "📚 AI 자동 산출물 (구조도)"
-])
+tab1, tab2, tab3 = st.tabs(["📊 통합 관제 센터", "💬 AI 코드 어시스턴트", "📚 AI 자동 산출물 (구조도)"])
 
 # ------------------------------------------
-# [TAB 1] 실시간 리소스 모니터링 (Grafana 스타일)
+# [TAB 1] 통합 실시간 관제 센터 (리소스 + 크래시)
 # ------------------------------------------
 with tab1:
-    st.subheader("📊 서버 실시간 관제 센터")
+    st.subheader("🖥️ VibeToExtreme 통합 관제 센터")
     
-    # 상단에 요약 지표(Metric) 배치
-    col1, col2, col3 = st.columns(3)
-    cpu_metric = col1.empty()
-    mem_metric = col2.empty()
-    session_metric = col3.empty()
-
-    # 관제 방식 선택 (라디오 버튼)
-    chart_type = st.radio("📈 차트 스타일 선택", ["Line Chart (추세 확인)", "Bar Chart (현재 부하량)"], horizontal=True)
-    
-    chart_placeholder = st.empty()
-    
-    if st.button("🔴 실시간 관제 시작"):
-        cpu_history = []
-        mem_history = []
-        
-        while True:
-            cpu = psutil.cpu_percent()
-            mem = psutil.virtual_memory().percent
+    col_btn1, col_btn2 = st.columns([2, 8])
+    with col_btn1:
+        button_label = "🛑 통합 관제 정지" if st.session_state.is_monitoring else "🔴 실시간 통합 관제 시작"
+        if st.button(button_label):
+            st.session_state.is_monitoring = not st.session_state.is_monitoring
+            st.rerun()
             
-            # [세션 수 파악 로직] 
-            # 7777 포트로 연결된 클라이언트의 수를 OS에 직접 물어봅니다.
+    with col_btn2:
+        # ★ 수정: 생략되었던 백업 로직 완벽 복구
+        if st.button("💾 서버 로그 백업 및 초기화 (Archive)"):
+            if os.path.exists(LOG_FILE_PATH):
+                history_dir = os.path.join(SERVER_PROJECT_PATH, "history")
+                os.makedirs(history_dir, exist_ok=True)
+                now_str = datetime.datetime.now().strftime("%Y_%m%d_%H%M%S")
+                backup_filepath = os.path.join(history_dir, f"server_log_{now_str}.txt")
+
+                with open(LOG_FILE_PATH, "r", encoding="utf-8") as f_orig:
+                    log_content = f_orig.read()
+                
+                if log_content.strip():
+                    with open(backup_filepath, "w", encoding="utf-8") as f_backup:
+                        f_backup.write(log_content)
+                    st.toast(f"✅ 백업 완료: server_log_{now_str}.txt")
+
+                open(LOG_FILE_PATH, 'w').close()
+
+            st.session_state.ai_report = None
+            st.session_state.last_analyzed_log = ""
+            st.rerun()
+
+    # ★ 수정: index를 강제 지정하지 않고 key로만 상태를 묶어서 리셋 방지
+    st.radio("📈 차트 스타일 선택", ["Line Chart (추세)", "Bar Chart (현재)"], key="chart_style", horizontal=True)
+
+    # ★ AI를 백그라운드에서 몰래 돌리기 위한 함수
+    def background_ai_task(prompt_text, current_log_text):
+        try:
+            res = requests.post('http://localhost:11434/api/generate', json={"model": "qwen2.5-coder", "prompt": prompt_text, "stream": False})
+            st.session_state.ai_report = res.json()['response']
+        except Exception as e:
+            st.session_state.ai_report = f"로컬 AI 연결 실패: {e}"
+        finally:
+            st.session_state.last_analyzed_log = current_log_text
+            st.session_state.ai_is_analyzing = False # 분석 완료!
+
+    @st.fragment(run_every=1)
+    def live_dashboard_fragment():
+        if not st.session_state.is_monitoring:
+            st.info("⏸️ 관제가 정지되었습니다.")
+            return
+
+        col_left, col_right = st.columns([6, 4])
+        
+        with col_left:
+            # CPU 측정 정확도 복구 완료
+            cpu = psutil.cpu_percent(interval=0.1) 
+            mem = psutil.virtual_memory().percent
             connections = psutil.net_connections()
             session_count = len([conn for conn in connections if conn.laddr.port == 7777 and conn.status == 'ESTABLISHED'])
             
-            # 메트릭 업데이트
-            cpu_metric.metric("CPU 점유율", f"{cpu}%")
-            mem_metric.metric("메모리 점유율", f"{mem}%")
-            session_metric.metric("현재 세션 수", f"{session_count} 명", delta=session_count - 500 if session_count > 500 else 0)
+            metric_col1, metric_col2, metric_col3 = st.columns(3)
+            metric_col1.metric("CPU 점유율", f"{cpu}%")
+            metric_col2.metric("메모리 점유율", f"{mem}%")
+            metric_col3.metric("현재 접속자 수", f"{session_count} 명")
 
-            # 데이터 축적 (선 그래프용 역사 기록)
-            cpu_history.append(cpu)
-            mem_history.append(mem)
-            if len(cpu_history) > 50: cpu_history.pop(0)
-            if len(mem_history) > 50: mem_history.pop(0)
+            st.session_state.cpu_history.append(cpu)
+            st.session_state.mem_history.append(mem)
+            if len(st.session_state.cpu_history) > 50: st.session_state.cpu_history.pop(0)
+            if len(st.session_state.mem_history) > 50: st.session_state.mem_history.pop(0)
 
-            # 차트를 그릴 영역
-            with chart_placeholder.container():
-                if "Line" in chart_type:
-                    # [선 그래프] 과거부터 지금까지의 흐름(History)을 모두 줍니다.
-                    df_line = pd.DataFrame({"CPU (%)": cpu_history, "RAM (%)": mem_history})
-                    st.line_chart(df_line, height=300)
-                else:
-                    # [막대 그래프] ★ 실무형 Altair 커스텀 차트
-                    df_bar = pd.DataFrame({
-                        "항목": ["🖥️ CPU", "💾 RAM"],
-                        "사용량 (%)": [cpu, mem]
-                    })
-                    
-                    # 막대 굵기(size)와 Y축 범위(0~100)를 강제 고정합니다.
-                    chart = alt.Chart(df_bar).mark_bar(size=80).encode(
-                        x=alt.X('항목', axis=alt.Axis(labelAngle=0, title=None)), # 글씨가 세로로 눕는 것 방지
-                        y=alt.Y('사용량 (%)', scale=alt.Scale(domain=[0, 100]))   # Y축을 항상 100%로 고정!
-                    ).properties(height=300)
-                    
-                    st.altair_chart(chart, use_container_width=True)
+            if "Line" in st.session_state.chart_style:
+                df_line = pd.DataFrame({"CPU (%)": st.session_state.cpu_history, "RAM (%)": st.session_state.mem_history})
+                st.line_chart(df_line, height=300)
+            else:
+                df_bar = pd.DataFrame({"사용량 (%)": [cpu, mem]}, index=["🖥️ CPU", "💾 RAM"])
+                chart = alt.Chart(df_bar.reset_index()).mark_bar(size=80).encode(
+                    x=alt.X('index', axis=alt.Axis(labelAngle=0, title=None)),
+                    y=alt.Y('사용량 (%)', scale=alt.Scale(domain=[0, 100]))
+                ).properties(height=300)
+                st.altair_chart(chart, use_container_width=True)
+                
+        with col_right:
+            st.markdown("#### 🚨 서버 로그 & AI 감시 (실시간)")
             
-            time.sleep(0.5)
+            current_log = "서버 대기 중... 로그 파일이 아직 없습니다."
+            is_crashed = False
+            
+            if os.path.exists(LOG_FILE_PATH):
+                with open(LOG_FILE_PATH, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                    if lines:
+                        current_log = "".join(lines[-15:])
+                        if "FATAL ERROR" in current_log:
+                            is_crashed = True
+                            
+            st.text_area(label="C++ Server Log", value=current_log, height=180, disabled=True, label_visibility="collapsed")
+                
+            # ★ 핵심: 크래시 감지 시 스레드로 던져버리기 (차트 멈춤 방지!)
+            if is_crashed:
+                if st.session_state.last_analyzed_log != current_log:
+                    if not st.session_state.ai_is_analyzing:
+                        st.session_state.ai_is_analyzing = True # 분석 시작 플래그 ON
+                        st.session_state.ai_report = None
+                        
+                        cpp_code = "코드를 찾을 수 없습니다."
+                        if os.path.exists(NETWORK_CODE_PATH):
+                            with open(NETWORK_CODE_PATH, "r", encoding="utf-8") as f: cpp_code = f.read()
+                            
+                        prompt = f"15년차 C++ 서버 전문가로서 아래 로그와 코드를 보고 에러 원인을 3줄 요약해.\n\n[로그]\n{current_log}\n\n[코드]\n{cpp_code}"
+                        
+                        # 하청업체(스레드)에게 일을 던지고 메인 화면은 계속 차트를 그립니다!
+                        t = threading.Thread(target=background_ai_task, args=(prompt, current_log))
+                        add_script_run_ctx(t) # 스레드가 Streamlit 상태를 건드릴 수 있게 허락해줌
+                        t.start()
+
+            # 분석 중일 때와 분석이 끝났을 때의 UI 분리
+            if st.session_state.ai_is_analyzing:
+                st.warning("🚨 크래시 감지! 로컬 AI가 백그라운드에서 분석 중입니다... ⚙️ (차트는 멈추지 않습니다!)")
+            elif st.session_state.ai_report:
+                st.success("✔️ AI 실시간 분석 결과")
+                st.info(st.session_state.ai_report)
+
+    live_dashboard_fragment()
 
 # ------------------------------------------
-# [TAB 2] 실시간 크래시 감시 (기존 기능)
+# [TAB 2] AI 코드 어시스턴트 (새로운 종합 관리 기능)
 # ------------------------------------------
 with tab2:
-    if st.button("🔄 서버 상태 새로고침"):
-        st.rerun()
-
-    current_log = "서버 대기 중... 로그 파일이 아직 없습니다."
-    is_crashed = False
-
-    if os.path.exists(LOG_FILE_PATH):
-        with open(LOG_FILE_PATH, "r", encoding="utf-8") as f:
-            current_log = f.read()
-        if "FATAL ERROR" in current_log:
-            is_crashed = True
-
-    st.subheader("📜 실시간 서버 로그")
-    st.text_area("C++ Server Log", current_log, height=150, key="log_area")
-
-    if is_crashed:
-        st.error("🚨 치명적인 크래시 감지! 로컬 AI(Qwen)가 분석합니다.")
-        cpp_code = "코드를 찾을 수 없습니다."
-        if os.path.exists(NETWORK_CODE_PATH):
-            with open(NETWORK_CODE_PATH, "r", encoding="utf-8") as f:
-                cpp_code = f.read()
-
-        if st.session_state.last_log != current_log:
-            with st.spinner("로컬 워크스테이션에서 추론 중..."):
-                prompt = f"15년차 C++ 서버 전문가로서 아래 로그와 코드를 보고 데드락 원인을 3줄 요약해.\n\n[로그]\n{current_log}\n\n[코드]\n{cpp_code}"
-                try:
-                    res = requests.post('http://localhost:11434/api/generate', json={"model": "qwen2.5-coder", "prompt": prompt, "stream": False})
-                    st.session_state.ai_report = res.json()['response']
-                    st.session_state.last_log = current_log
-                except Exception as e:
-                    st.session_state.ai_report = f"로컬 AI 연결 실패: {e}"
-                    
-        if st.session_state.ai_report:
-            st.success("✔️ AI 분석 완료")
-            st.info(st.session_state.ai_report)
-
-# ------------------------------------------
-# [TAB 3] AI 코드 어시스턴트 (새로운 종합 관리 기능)
-# ------------------------------------------
-with tab3:
     st.subheader("🤖 내 프로젝트 로컬 AI 멘토")
     st.markdown("프로젝트 내의 C++ 파일을 선택하고, 궁금한 점이나 최적화 방안을 질문하세요.")
 
@@ -193,9 +214,9 @@ with tab3:
                     st.error("Ollama 서버에 연결할 수 없습니다.")
 
 # ------------------------------------------
-# [TAB 4] AI 프로젝트 자동 문서화 (전체 숲 보기)
+# [TAB 3] AI 프로젝트 자동 문서화 (전체 숲 보기)
 # ------------------------------------------
-with tab4:
+with tab3:
     st.subheader("📚 AI 자동 생성 프로젝트 명세서")
     st.markdown("로컬 AI가 전체 C++ 소스 코드를 순회하며 아키텍처 문서를 자동으로 작성합니다.")
     

@@ -1,80 +1,63 @@
 # 🚀 VibeToExtreme 서버 아키텍처 명세서
 
 ### 📄 `main.cpp`
-```markdown
-- `main.cpp`는 게임 서버의 진입점입니다.
-- `NetworkCore` 클래스를 사용해 네트워크 인프라를 초기화하고 서버를 시작합니다.
-- IOCP(입출력 완료 포인트)를 설정해 비동기 통신을 구현합니다.
-- 에러 발생 시 예외 처리로 문제를 잡아냅니다.
-```
+- `NetworkCore` 클래스를 통해 네트워크 서버의 핵심 기능을 관리합니다.
+- `InitializeIOCP()` 함수로 I/O 컨텍스트 포인터를 초기화합니다.
+- `StartServer(7777)` 함수로 서버를 7777번 포트에서 시작합니다.
+- 예외 처리를 위해 try-catch 블록을 사용하여 에러 메시지를 출력합니다.
 
 ---
 
 ### 📄 `NetworkCore.cpp`
-- **NetworkCore.cpp**: C++로编작된 네트워크 서버의 핵심 컴포넌트로, 비동기 I/O를 위한 IOCP를 사용하여 클라이언트와의 통신을 관리합니다.
-
-- **InitializeIOCP()**: IOCP 객체 생성 및 초기화를 담당하는 함수입니다. 이는 서버가 클라이언트 연결을 효율적으로 처리할 수 있도록 하는 중요합니다.
-
-- **StartServer(uint16_t port)**: 서버를 시작하는 메인 함수로, 포트 설정, 소켓 생성, Bind, Listen 등 초기화 작업을 수행하고, Accept 스레드와 워커 스레드들을 구동시킵니다. 이 함수는 서버의 전체적인 작동을 제어합니다.
-
-- **AcceptThreadMain()**: 클라이언트의 연결 요청을 받아들이고, 세션 매니저에서 세션을 할당하여 비동기 통신을 설정하는 역할을 합니다. 이를 통해 동시에 여러 클라이언트와의 연결을 관리할 수 있습니다.
-
-- **WorkerThreadMain()**: IOCP로부터 전달된 이벤트를 처리하는 워커 스레드의 메인 함수입니다. 여기서는 클라이언트로부터 데이터를 받고, 패킷 타입을 확인하여 적절한 처리를 수행합니다. 이 함수는 서버의 성능과 효율성을 향상시키는데 핵심적입니다.
+- **네트워크 커어 초기화:** `NetworkCore` 클래스는 네트워크 서버의 핵심 로직을 담당합니다. 생성자에서 Windows 소켓 API를 초기화하고, 소멸자에서는 리소스를 정리합니다.
+- **IOCP 설정:** `InitializeIOCP` 함수는 I/O 컬러프로킹(Io Completion Port)을 설정하여 비동기 입출력을 효율적으로 관리합니다.
+- **서버 시작:** `StartServer` 메서드는 서버를 시작하고 클라이언트 연결을 수신하는 스레드와 워커 스레드를 생성합니다. 또한, 상태 모니터링 스레드도 추가하여 내부 상태를 추적합니다.
+- **네트워크 이벤트 처리:** `AcceptThreadMain`과 `WorkerThreadMain` 메서드는 비동기 네트워크 이벤트를 처리하며, 클라이언트 연결 및 데이터 수신에 대한 로깅과 오류 처리를 담당합니다.
 
 ---
 
 ### 📄 `Session.cpp`
-- **생성자 (`Session()`)**: 세션을 초기화하며, `m_sessionId`, `m_socket`, `m_inUse` 변수를 설정합니다.
-  
-- **소멸자 (`~Session()`)**: 사용 중인 소켓이 있다면 닫아서 메모리를 해제합니다.
-
-- **리셋 함수 (`Reset()`)**: 세션을 초기 상태로 되돌립니다. `m_inUse`을 `false`로 설정하고, 소켓을 무효하게 만듭니다.
+- `Session` 클래스는 게임 서버와 클라이언트 사이의 세션을 관리합니다.
+- 생성자 `Session()` initializes member variables: `m_sessionId`, `m_socket`, and `m_inUse`.
+- 소멸자 `~Session()` closes the socket if it is still open.
+- `Reset()` 함수는 세션 상태를 초기화하며, `m_inUse`을 `false`로 설정하고, 소켓을 닫습니다.
 
 ---
 
 ### 📄 `SessionManager.cpp`
 - `SessionManager` 클래스는 게임 서버의 세션 관리를 담당하며, 최대 세션 수를 설정할 수 있습니다.
-- 생성자에서 세션들을 미리 생성하고, 사용 가능한 인덱스 목록을 초기화합니다.
-- 소멸자는 모든 세션 객체를 해제합니다.
-- `Acquire` 함수는 비어 있는 세션을 가져오며, 없으면 `nullptr`을 반환합니다.
-- `Release` 함수는 사용한 세션을 다시 반납하고, 해당 세션의 인덱스를 재사용할 수 있게 합니다.
+- 생성자에서 세션을 미리 생성하고, 초기화 상태로 유지합니다. 비어있는 세션 인덱스를 저장하는 리스트도 준비합니다.
+- `Acquire` 함수는 사용 가능한 세션을 가져옵니다. 만약 모든 세션이 사용 중이라면 nullptr를 반환합니다.
+- `Release` 함수는 사용된 세션을 반납하고, 다시 비어있는 세션 목록에 추가합니다. 이미 반납된 상태의 세션은 무시됩니다.
 
 ---
 
 ### 📄 `NetworkCore.h`
-```markdown
-- **NetworkCore.h**: 게임 서버의 네트워크 핵심 컴포넌트를 정의한 헤더 파일입니다.
-- **클래스 `NetworkCore`**:
-  - **함수**:
-    - `InitializeIOCP()`: I/O 완료 포인트 (IOCP)를 초기화합니다.
-    - `StartServer(uint16_t port)`: 서버를 지정된 포트에서 시작합니다.
-  - **변수**:
-    - `m_iocpHandle`: IOCP 핸들입니다.
-    - `m_listenSocket`: 연결 대기 소켓입니다.
-    - `m_running`: 서버가 실행 중인지 여부를 나타내는 플래그입니다.
-    - `m_sessionManager`: 세션 관리자를 위한 포인터입니다.
-    - `m_workerThreads`: 워커 스레드 벡터입니다.
-    - `m_acceptThread`: 연결 수락을 담당하는 스레드입니다.
-```
+- **NetworkCore**: 게임 서버의 네트워크 핵심을 담당하는 클래스. IOCP를 초기화하고, 서버를 시작하며, 워커 스레드와 수용 스레드를 관리합니다.
+  - `InitializeIOCP`: IOCP를 초기화하는 함수.
+  - `StartServer(uint16_t port)`: 지정된 포트에서 서버를 시작하는 함수.
+  - `WorkerThreadMain`: 클라이언트 연결을 처리하는 워커 스레드의 메인 함수.
+  - `AcceptThreadMain`: 클라이언트 연결 수용을 처리하는 수용 스레드의 메인 함수.
 
 ---
 
 ### 📄 `Session.h`
-- **Session 클래스**: 클라이언트 세션을 관리하며, 비동기 수신을 위해 `WSARecv` 함수를 사용합니다.
-- **OverlappedContext 구조체**: `WSAOVERLAPPED`, `WSABUF`, 그리고 버퍼를 포함하여 비동기 I/O 작업에 필요한 정보를 저장합니다.
-- **OnReceive 함수**: 수신한 데이터를 처리하는 메서드입니다.
-- **PostRecv 함수**: 비동기 수신을 요청하고, 오버라이드된 컨텍스트 초기화를 합니다.
+- **Session.h**: C++ 게임 서버에서 클라이언트 세션을 관리하는 헤더 파일입니다.
+- **PacketType**: 데이터 패킷의 유형을 정의한 열거체입니다. 특히 `CRASH_BOMB`는 특별히 지정되어 있습니다.
+- **Session 클래스**:
+  - **Reset()**: 세션을 초기화합니다.
+  - **SetSessionId()와 GetSessionId()**: 클라이언트의 세션 ID를 설정하고 가져옵니다.
+  - **GetSocket()과 SetSocket()**: 소켓을 가져오고 설정하며, 사용 중 상태를 관리합니다.
+  - **OnReceive(int bytesTransferred)**: 수신된 데이터를 처리하는 함수입니다.
+  - **PostRecv()**: 비동기로 데이터를 받는 작업을 시작하고, 오버플로우 방지를 위해 매번 초기화합니다.
 
 ---
 
 ### 📄 `SessionManager.h`
-- **Core Role:** `SessionManager`는 게임 서버에서 세션 관리를 담당하는 클래스입니다. 클라이언트의 연결을 모니터링하고, 필요한 경우 새로운 세션을 생성하거나 기존의 세션을 해제합니다.
-
-- **Important Classes/Functions:**
-  - `explicit SessionManager(size_t maxSession);`: 최대 세션 수를 설정하여 인스턴스를 초기화합니다.
-  - `~SessionManager();`: 할당된 모든 리소스를 정리하고 해제합니다.
-  - `Session* Acquire();`: 사용 가능한 세션을 가져옵니다. 만약 없다면 새로운 세션을 생성하거나 기다립니다.
-  - `void Release(Session* session);`: 사용이 끝난 세션을 해제합니다.
+- `SessionManager` 클래스는 게임 서버의 세션 관리를 담당합니다.
+- 생성자는 최대 세션 수를 받아 초기화하고, 소멸자에서는 모든 세션을 해제합니다.
+- `Acquire()` 함수는 사용 가능한 세션을 가져오고, `Release()` 함수는 사용한 세션을 반납합니다.
+- `GetAvailableSessionCount()` 함수는 현재 남은 비어있는 세션 수를 안전하게 반환합니다.
 
 ---
 
