@@ -4,58 +4,79 @@
 #include <WinSock2.h>
 #include <iostream>
 
+#pragma pack(push, 1)
+struct PacketHeader {
+    uint16_t size;
+    uint16_t id;
+};
+#pragma pack(pop)
+
 enum class PacketType : uint16_t {
     NONE = 0,
-    CRASH_BOMB = 999, // 이 번호가 오면 서버를 터뜨립니다.
+    C2S_MOVE = 1,       // 클라이언트 -> 서버 이동
+    S2C_MOVE_BROAD = 2, // 서버 -> 클라이언트 이동 브로드캐스팅
+    CRASH_BOMB = 999,
 };
 
+// buffer 변수를 삭제하고 가볍게 만듭니다.
 struct OverlappedContext {
     WSAOVERLAPPED overlapped;
     WSABUF wsaBuf;
-    char buffer[1024];
 };
 
 class Session {
 public:
-    Session();
-    ~Session();
+    Session() { Reset(); }
+    ~Session() {}
 
-    void Reset();
+    void Reset() {
+        m_inUse = false;
+        m_socket = INVALID_SOCKET;
+        m_readPos = 0;
+        m_writePos = 0;
+    }
 
-    // 내 방 번호를 설정하고 가져오는 함수
     void SetSessionId(int id) { m_sessionId = id; }
     int GetSessionId() const { return m_sessionId; }
 
     SOCKET GetSocket() const { return m_socket; }
     void SetSocket(SOCKET s) { m_socket = s; m_inUse = true; }
 
-    void OnReceive(int bytesTransferred);
+    bool IsFree() const { return !m_inUse; }
     OverlappedContext& GetReceiveContext() { return m_recvContext; }
 
-    bool IsFree() const { return !m_inUse; }
-
+    // 비동기 수신 대기
     bool PostRecv() {
         DWORD recvBytes = 0;
         DWORD flags = 0;
 
-        // 매번 받을 때마다 OVERLAPPED 구조체를 깨끗하게 초기화해야 합니다. (매우 중요)
         ZeroMemory(&m_recvContext.overlapped, sizeof(m_recvContext.overlapped));
-        m_recvContext.wsaBuf.buf = m_recvContext.buffer;
-        m_recvContext.wsaBuf.len = sizeof(m_recvContext.buffer);
 
-        // 비동기 수신(WSARecv) 요청!
+        // ★ 핵심: OS에게 "내 recvBuffer의 writePos 위치부터 빈 공간만큼 데이터를 채워줘!" 라고 부탁합니다.
+        m_recvContext.wsaBuf.buf = &m_recvBuffer[m_writePos];
+        m_recvContext.wsaBuf.len = BUFFER_SIZE - m_writePos;
+
         if (::WSARecv(m_socket, &m_recvContext.wsaBuf, 1, &recvBytes, &flags, &m_recvContext.overlapped, nullptr) == SOCKET_ERROR) {
             if (::WSAGetLastError() != WSA_IO_PENDING) {
                 std::cout << "🚨 WSARecv 에러 발생: " << ::WSAGetLastError() << std::endl;
-                return false; // ★ 핵심: 즉시 에러가 났으니 Accept 스레드에게 실패했다고 알림!
+                return false;
             }
         }
-        return true; // ★ 무사히 대기열에 들어갔거나, 즉시 완료됨
+        return true;
     }
+
+    // ★ 질문 3에 대한 답변: 파싱 루틴은 이 함수 안에 들어갑니다! (Session.cpp에 구현)
+    void OnReceive(int bytesTransferred);
 
 private:
     OverlappedContext m_recvContext;
     int m_sessionId;
     SOCKET m_socket;
     bool m_inUse;
+
+    // ★ 질문 1에 대한 답변: 각 세션이 자기만의 버퍼와 커서를 가져야 합니다.
+    static const int BUFFER_SIZE = 65535;
+    char m_recvBuffer[BUFFER_SIZE];
+    int m_readPos;
+    int m_writePos;
 };
