@@ -17,6 +17,12 @@ public:
         return m_freeIndices.size();
     }
 
+    // 맵에 있는 모두에게 패킷을 뿌립니다. (excludeSessionId: 나 자신은 제외)
+    void Broadcast(char* packet, int size, int excludeSessionId = -1);
+
+    // 새로 접속한 뉴비에게 기존 유저들의 목록을 쏴주는 함수
+    void SyncExistingSessions(Session* newSession);
+
 private:
     std::vector<Session*> m_sessions;
     std::vector<int> m_freeIndices;

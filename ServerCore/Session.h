@@ -11,6 +11,43 @@ struct PacketHeader {
 };
 #pragma pack(pop)
 
+#pragma pack(push, 1)
+// 이동 패킷 본문 (Body)
+struct C2S_MovePacket {
+    int32_t sessionId; // 누가 움직이는가? (서버가 클라를 식별하기 위함, 4바이트)
+    float posX;        // 현재 X 좌표 (4바이트)
+    float posY;        // 현재 Y 좌표 (4바이트)
+    float dirX;        // X축 바라보는 방향 (-1, 0, 1) (4바이트)
+    float dirY;        // Y축 바라보는 방향 (-1, 0, 1) (4바이트)
+};
+#pragma pack(pop)
+
+#pragma pack(push, 1)
+struct S2C_SpawnPacket {
+    uint16_t size;
+    uint16_t id;        // 4 (예: 입장 패킷 ID)
+    int32_t sessionId;  // 새로 들어온 놈의 번호
+    float spawnX;       // 스폰 X 위치
+    float spawnY;       // 스폰 Y 위치
+};
+#pragma pack(pop)
+
+#pragma pack(push, 1)
+struct S2C_LeavePacket {
+    uint16_t size;      // 8바이트 (size + id + sessionId)
+    uint16_t id;        // 3 (예: 퇴장 패킷 ID)
+    int32_t sessionId;  // 방금 나간 놈의 번호
+};
+#pragma pack(pop)
+
+#pragma pack(push, 1)
+struct S2C_LoginPacket {
+    uint16_t size;
+    uint16_t id;       // 5번: 로그인 (ID 부여)
+    int32_t mySessionId;
+};
+#pragma pack(pop)
+
 enum class PacketType : uint16_t {
     NONE = 0,
     C2S_MOVE = 1,       // 클라이언트 -> 서버 이동
@@ -24,17 +61,15 @@ struct OverlappedContext {
     WSABUF wsaBuf;
 };
 
+class SessionManager;
+
 class Session {
 public:
-    Session() { Reset(); }
-    ~Session() {}
+    Session();
+    ~Session();
+    void Reset();
 
-    void Reset() {
-        m_inUse = false;
-        m_socket = INVALID_SOCKET;
-        m_readPos = 0;
-        m_writePos = 0;
-    }
+    void OnReceive(int bytesTransferred, SessionManager* manager);
 
     void SetSessionId(int id) { m_sessionId = id; }
     int GetSessionId() const { return m_sessionId; }
@@ -65,8 +100,11 @@ public:
         return true;
     }
 
-    // ★ 질문 3에 대한 답변: 파싱 루틴은 이 함수 안에 들어갑니다! (Session.cpp에 구현)
-    void OnReceive(int bytesTransferred);
+    bool Send(char* packet, int size);
+
+    void SetPosition(float x, float y) { m_posX = x; m_posY = y; }
+    float GetPosX() const { return m_posX; }
+    float GetPosY() const { return m_posY; }
 
 private:
     OverlappedContext m_recvContext;
@@ -79,4 +117,8 @@ private:
     char m_recvBuffer[BUFFER_SIZE];
     int m_readPos;
     int m_writePos;
+
+    float m_posX = 0.0f;
+    float m_posY = 0.0f;
 };
+

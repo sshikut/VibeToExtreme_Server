@@ -134,6 +134,31 @@ void NetworkCore::AcceptThreadMain() {
         else {
             // 정상적으로 대기열에 들어간 경우에만 성공으로 취급
             std::cout << "🎉 접속 및 수신 대기 성공! 세션 인덱스: " << session->GetSessionId() << std::endl;
+
+            // ==============================================================
+            // 🎯 초기 동기화 (Initial Synchronization) 시작!
+            // ==============================================================
+
+            // 뉴비에게 "너의 고유 ID는 이거야!" 라고 알려줍니다.
+            S2C_LoginPacket loginPkt;
+            loginPkt.size = sizeof(S2C_LoginPacket);
+            loginPkt.id = 5;
+            loginPkt.mySessionId = session->GetSessionId();
+            session->Send((char*)&loginPkt, sizeof(loginPkt));
+
+            // 1. 기존 유저들에게 "뉴비가 왔어!" 라고 브로드캐스팅
+            S2C_SpawnPacket spawnPkt;
+            spawnPkt.size = sizeof(S2C_SpawnPacket);
+            spawnPkt.id = 4;
+            spawnPkt.sessionId = session->GetSessionId();
+            spawnPkt.spawnX = 0.0f;
+            spawnPkt.spawnY = 0.0f;
+            m_sessionManager->Broadcast((char*)&spawnPkt, sizeof(spawnPkt), session->GetSessionId());
+
+            // 2. 뉴비에게 "기존에 있던 고인물 명단이야!" 라고 1:1 동기화
+            m_sessionManager->SyncExistingSessions(session);
+
+            // ==============================================================
         }
     }
 }
@@ -185,33 +210,22 @@ void NetworkCore::WorkerThreadMain() {
                 }
                 if (logFile.is_open()) logFile.close();
 
+                S2C_LeavePacket leavePkt;
+                leavePkt.size = sizeof(S2C_LeavePacket);
+                leavePkt.id = 3;
+                leavePkt.sessionId = sessionId;
+                // m_sessionManager가 이 패킷을 1만 명(나 제외)에게 쫙 뿌립니다.
+                m_sessionManager->Broadcast((char*)&leavePkt, sizeof(leavePkt), sessionId);
+
                 m_sessionManager->Release(session);
                 ::closesocket(session->GetSocket());
             }
             continue;
         }
 
-        // [핵심] 유니티에서 보낸 패킷 타입 확인
-        PacketType* type = reinterpret_cast<PacketType*>(context->buffer);
-
-        // ★ 워커 스레드의 마지막 방어막: 처리 끝났으니 다음 편지 내놔!
-        bool isSuccess = session->PostRecv();
-
-        if (!isSuccess) {
-            // 통신 중에 악성 봇이 강제로 연결을 끊고 도망갔다!
-            int sessionId = session->GetSessionId();
-            std::cout << "🚨 [경고] 워커 스레드 재수신 실패! 세션 " << sessionId << " 즉시 반납!" << std::endl;
-
-            // 파일 로깅 (선택 사항)
-            std::ofstream logFile("server_log.txt", std::ios::app);
-            if (logFile.is_open()) {
-                logFile << "-> FATAL ERROR: 재수신(PostRecv) 실패에 의한 강제 반납. (Session: " << sessionId << ")\n";
-                logFile.close();
-            }
-
-            // 남은 방 열쇠 강제 회수
-            m_sessionManager->Release(session);
-            ::closesocket(session->GetSocket());
+        // 워커 스레드는 그저 "데이터가 n바이트 도착했어!" 라고 세션에게 알려주기만 하면 됩니다.
+        if (session != nullptr) {
+            session->OnReceive(bytesTransferred, m_sessionManager.get());
         }
     }
 }
