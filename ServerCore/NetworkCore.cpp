@@ -139,6 +139,13 @@ void NetworkCore::AcceptThreadMain() {
             // 🎯 초기 동기화 (Initial Synchronization) 시작!
             // ==============================================================
 
+            // 뉴비가 0번 격자에 몰리지 않도록 초기 좌표를 맵 전체에 랜덤하게 흩뿌립니다!
+            float randomX = static_cast<float>(rand() % (MAX_SECTOR_X * SECTOR_SIZE));
+            float randomY = static_cast<float>(rand() % (MAX_SECTOR_Y * SECTOR_SIZE));
+
+            // 처음 접속 시 해당 랜덤 격자의 연결 리스트에 나를 밀어 넣습니다.
+            m_sessionManager->UpdateSessionSector(session, randomX, randomY);
+
             // 뉴비에게 "너의 고유 ID는 이거야!" 라고 알려줍니다.
             S2C_LoginPacket loginPkt;
             loginPkt.size = sizeof(S2C_LoginPacket);

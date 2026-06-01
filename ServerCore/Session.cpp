@@ -38,17 +38,19 @@ void Session::OnReceive(int bytesTransferred, SessionManager* manager) {
         // ----------------------------------------------------
         if (header->id == 1) // C2S_MOVE 수신!
         {
-            std::cout << "[서버] " << m_sessionId << "번 유저의 이동 패킷 수신! 브로드캐스팅 합니다." << std::endl;
+            // (1만 명 접속 시 이 cout은 콘솔 창을 마비시키므로 주석 처리하는 것이 좋습니다)
+            // std::cout << "[서버] " << m_sessionId << "번 유저의 이동 패킷 수신!" << std::endl;
 
             C2S_MovePacket* movePkt = reinterpret_cast<C2S_MovePacket*>(&m_recvBuffer[m_readPos + sizeof(PacketHeader)]);
-
             movePkt->sessionId = m_sessionId;
             header->id = 2;
 
-            // ★ 추가: 1만 명에게 뿌리기 전에, 서버의 내 정보에도 이 최신 좌표를 갱신합니다!
-            this->SetPosition(movePkt->posX, movePkt->posY);
+            // ★ 1. 유저의 좌표를 갱신하면서 동시에 Sector(격자) 이중 연결 리스트도 O(1)로 이동시킵니다!
+            manager->UpdateSessionSector(this, movePkt->posX, movePkt->posY);
 
-            manager->Broadcast(&m_recvBuffer[m_readPos], header->size, m_sessionId);
+            // ★ 2. 1만 명 전체가 아니라, 내가 속한 해당 '격자'에만 패킷을 쏩니다! (CPU 오버헤드 99% 감소)
+            auto [gridX, gridY] = manager->GetSectorIndex(movePkt->posX, movePkt->posY);
+            manager->BroadcastToSurroundingSectors(gridX, gridY, &m_recvBuffer[m_readPos], header->size, m_sessionId);
         }
 
         // 이 한 줄이 없어서 무한루프에 빠졌던 것입니다! 읽은 만큼 커서 전진!

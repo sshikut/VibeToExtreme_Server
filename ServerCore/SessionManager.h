@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <shared_mutex>
 
-constexpr int SECTOR_SIZE = 10;   // 격자 1개의 크기 (예: 10 Unit)
+constexpr int SECTOR_SIZE = 30;   // 격자 1개의 크기 (예: 10 Unit)
 constexpr int MAX_SECTOR_X = 100; // X축 격자 개수
 constexpr int MAX_SECTOR_Y = 100; // Y축 격자 개수
 
@@ -54,6 +54,8 @@ public:
     void UpdateSessionSector(Session* session, float newX, float newY);
 
     void RemoveSessionFromItsSector(Session* session);
+
+    void BroadcastToSurroundingSectors(int centerGridX, int centerGridY, char* packet, int size, int excludeSessionId = -1);
 
 private:
     std::vector<Session*> m_sessions;
