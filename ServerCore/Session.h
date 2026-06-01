@@ -106,6 +106,9 @@ public:
     float GetPosX() const { return m_posX; }
     float GetPosY() const { return m_posY; }
 
+    Session* prevSectorNode = nullptr;
+    Session* nextSectorNode = nullptr;
+
 private:
     OverlappedContext m_recvContext;
     int m_sessionId;

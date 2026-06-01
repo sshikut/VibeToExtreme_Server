@@ -86,3 +86,85 @@ void SessionManager::SyncExistingSessions(Session* newSession) {
         }
     }
 }
+
+void SessionManager::UpdateSessionSector(Session* session, float newX, float newY) {
+    auto [oldX, oldY] = GetSectorIndex(session->GetPosX(), session->GetPosY());
+    auto [newGridX, newGridY] = GetSectorIndex(newX, newY);
+
+    if (oldX == newGridX && oldY == newGridY) {
+        session->SetPosition(newX, newY);
+        return;
+    }
+
+    Sector& oldSector = m_grid[oldX][oldY];
+    Sector& newSector = m_grid[newGridX][newGridY];
+
+    // 읽기/쓰기 락(SRWLOCK) 중 강력한 '쓰기 락'을 획득합니다. (데드락 방지)
+    std::scoped_lock writeLock(oldSector.srwLock, newSector.srwLock);
+
+    // 구시대적인 oldList.erase()는 버리고 압도적으로 빠른 포인터 조작을 씁니다.
+    RemoveSessionFromSector(oldSector, session);
+    session->SetPosition(newX, newY);
+    AddSessionToSector(newSector, session);
+}
+
+void SessionManager::BroadcastToSector(int gridX, int gridY, char* packet, int size, int excludeSessionId) {
+    Sector& targetSector = m_grid[gridX][gridY];
+
+    // 누군가 이동(Write) 중이 아니라면, 1만 개의 스레드가 락을 무시하고 동시에 읽을 수 있습니다!
+    std::shared_lock<std::shared_mutex> readLock(targetSector.srwLock);
+
+    Session* current = targetSector.head;
+    while (current != nullptr) {
+        if (current->GetSessionId() != excludeSessionId) {
+            current->Send(packet, size);
+        }
+        current = current->nextSectorNode;
+    }
+}
+
+void SessionManager::AddSessionToSector(Sector& sector, Session* session) {
+    session->nextSectorNode = nullptr;
+    session->prevSectorNode = sector.tail;
+
+    if (sector.tail != nullptr) {
+        sector.tail->nextSectorNode = session;
+    }
+    else {
+        sector.head = session; // 방에 아무도 없었다면 내가 head
+    }
+    sector.tail = session;
+}
+
+// ★ $O(1)$ 삭제: 내 앞사람과 뒷사람의 손을 서로 이어주고 나는 빠집니다. (메모리 복사 0%)
+void SessionManager::RemoveSessionFromSector(Sector& sector, Session* session) {
+    if (session->prevSectorNode != nullptr) {
+        session->prevSectorNode->nextSectorNode = session->nextSectorNode;
+    }
+    else {
+        sector.head = session->nextSectorNode;
+    }
+
+    if (session->nextSectorNode != nullptr) {
+        session->nextSectorNode->prevSectorNode = session->prevSectorNode;
+    }
+    else {
+        sector.tail = session->prevSectorNode;
+    }
+
+    // 내 손은 깨끗하게 씻습니다.
+    session->prevSectorNode = nullptr;
+    session->nextSectorNode = nullptr;
+}
+
+// 유저가 강제 종료되거나 맵을 나갈 때 호출하는 안전한 퇴장 함수
+void SessionManager::RemoveSessionFromItsSector(Session* session) {
+    auto [gridX, gridY] = GetSectorIndex(session->GetPosX(), session->GetPosY());
+    Sector& mySector = m_grid[gridX][gridY];
+
+    // 격자의 쓰기 락을 걸고 안전하게 명단에서 삭제합니다.
+    std::scoped_lock writeLock(mySector.srwLock);
+
+    // 아까 만들어둔 O(1) 삭제 헬퍼 함수 재활용!
+    RemoveSessionFromSector(mySector, session);
+}

@@ -4,7 +4,7 @@ import time
 
 SERVER_IP = '127.0.0.1'
 SERVER_PORT = 7777 # 작성자님의 C++ 서버 포트 번호로 맞추세요!
-BOT_COUNT = 1000    # 한 번에 투입할 가짜 AI 봇(클라이언트) 수
+BOT_COUNT = 500    # 한 번에 투입할 가짜 AI 봇(클라이언트) 수
 
 def ai_bot_behavior(bot_id):
     try:

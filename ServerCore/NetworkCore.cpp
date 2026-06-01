@@ -195,28 +195,21 @@ void NetworkCore::WorkerThreadMain() {
 
             if (session) {
                 int sessionId = session->GetSessionId();
-                std::ofstream logFile("server_log.txt", std::ios::app);
+                std::cout << "[비정상 종료] 세션 " << sessionId << " 연결 해제." << std::endl;
 
-                if (result && bytesTransferred == 0) {
-                    // [정상 로그아웃]
-                    std::cout << "[정상 종료] 세션 " << sessionId << " 연결 해제." << std::endl;
-                    if (logFile.is_open()) logFile << "[INFO] Session " << sessionId << " Gracefully Disconnected.\n";
-                }
-                else {
-                    // [비정상 강제 종료] 오염되지 않은 순수한 errCode를 사용합니다!
-                    std::string errMsg = GetWindowsErrorMessage(errCode);
-                    std::cout << "[비정상 종료] 세션 " << sessionId << " | 사유: " << errMsg << std::endl;
-                    if (logFile.is_open()) logFile << "-> FATAL ERROR: " << errMsg << " (Code: " << errCode << ")\n";
-                }
-                if (logFile.is_open()) logFile.close();
-
+                // ★ 1. 퇴장 패킷 브로드캐스트 (이제 O(N^2)가 아니라 내 주변 격자에게만 쏘면 됨!)
                 S2C_LeavePacket leavePkt;
                 leavePkt.size = sizeof(S2C_LeavePacket);
                 leavePkt.id = 3;
                 leavePkt.sessionId = sessionId;
-                // m_sessionManager가 이 패킷을 1만 명(나 제외)에게 쫙 뿌립니다.
-                m_sessionManager->Broadcast((char*)&leavePkt, sizeof(leavePkt), sessionId);
 
+                auto [gridX, gridY] = m_sessionManager->GetSectorIndex(session->GetPosX(), session->GetPosY());
+                // (구현 생략) 내 주변 3x3 격자에만 leavePkt 쏘기
+
+                // ★ 2. 작성자님이 짚어낸 핵심: 연결 리스트에서 앞뒤 사람 손 이어주고 빠지기!
+                m_sessionManager->RemoveSessionFromItsSector(session);
+
+                // ★ 3. 그제야 안전하게 세션을 빈방으로 반납합니다.
                 m_sessionManager->Release(session);
                 ::closesocket(session->GetSocket());
             }

@@ -9,11 +9,14 @@ import altair as alt
 import datetime
 import threading # ★ 추가: AI를 백그라운드에서 돌리기 위한 스레드
 from streamlit.runtime.scriptrunner import add_script_run_ctx # ★ 추가: 스레드 경고 방지
+import subprocess
+import sys
 
 # ==========================================
 # ⚙️ [초기 설정] 경로 및 환경 변수
 # ==========================================
 SERVER_PROJECT_PATH = r"D:\Projects\VibeToExtreme\VibeToExtreme_Server" 
+AI_DEBUGGING_PATH = r"D:\Projects\VibeToExtreme\VibeToExtreme_Server\ServerMonitor_AI" 
 LOG_FILE_PATH = os.path.join(SERVER_PROJECT_PATH, "server_log.txt")
 NETWORK_CODE_PATH = os.path.join(SERVER_PROJECT_PATH, "NetworkCore.cpp")
 
@@ -30,6 +33,8 @@ if "cpu_history" not in st.session_state: st.session_state.cpu_history = []
 if "mem_history" not in st.session_state: st.session_state.mem_history = []
 if "chart_style" not in st.session_state: st.session_state.chart_style = "Line Chart (추세)"
 if "ai_is_analyzing" not in st.session_state: st.session_state.ai_is_analyzing = False # ★ AI 분석 상태 추가
+if "dummy_process" not in st.session_state: st.session_state.dummy_process = None
+if "stress_process" not in st.session_state: st.session_state.stress_process = None
 
 st.title("🚀 VibeToExtreme 통합 관리 대시보드")
 
@@ -70,6 +75,40 @@ with tab1:
             st.session_state.ai_report = None
             st.session_state.last_analyzed_log = ""
             st.rerun()
+
+    st.markdown("---")
+    st.markdown("#### 🎯 무인 테스트 봇 오케스트레이션 (원격 제어)")
+    col_bot1, col_bot2, col_bot3 = st.columns([3, 3, 4])
+    
+    with col_bot1:
+        if st.session_state.dummy_process is None:
+            if st.button("🟢 2,000명 더미 유저 투입", use_container_width=True):
+                # sys.executable은 현재 실행 중인 파이썬(가상환경 등)을 정확히 가리킵니다.
+                script_path = os.path.join(AI_DEBUGGING_PATH, "dummy_clients.py")
+                # 백그라운드에서 실행 (UI 멈춤 없음)
+                st.session_state.dummy_process = subprocess.Popen([sys.executable, script_path])
+                st.rerun()
+        else:
+            if st.button("🔴 더미 유저 회수 (Kill)", use_container_width=True):
+                st.session_state.dummy_process.terminate() # 프로세스 강제 종료
+                st.session_state.dummy_process = None
+                st.rerun()
+
+    with col_bot2:
+        if st.session_state.stress_process is None:
+            # 버튼에 눈에 띄는 이모지와 강조 효과(type="primary") 부여
+            if st.button("💣 500기 디도스 폭격 투하", type="primary", use_container_width=True):
+                script_path = os.path.join(AI_DEBUGGING_PATH, "stress_bot.py")
+                st.session_state.stress_process = subprocess.Popen([sys.executable, script_path])
+                st.rerun()
+        else:
+            if st.button("🛑 디도스 폭격 중지 (Kill)", use_container_width=True):
+                st.session_state.stress_process.terminate()
+                st.session_state.stress_process = None
+                st.rerun()
+                
+    st.markdown("---")        
+
 
     # ★ 수정: index를 강제 지정하지 않고 key로만 상태를 묶어서 리셋 방지
     st.radio("📈 차트 스타일 선택", ["Line Chart (추세)", "Bar Chart (현재)"], key="chart_style", horizontal=True)
