@@ -32,7 +32,7 @@ void BotGroupThread(int groupId, int botCount) {
     serverAddr.sin_port = ::htons(SERVER_PORT);
     ::inet_pton(AF_INET, SERVER_IP, &serverAddr.sin_addr);
 
-    std::cout << "[소대 " << groupId << "] 봇 연결 시작...\n";
+    std::cout << "[Group " << groupId << "] Starting bot connections...\n";
 
     // 1. 소켓 연결 (Connect) 단계
     for (int i = 0; i < botCount; ++i) {
@@ -51,34 +51,48 @@ void BotGroupThread(int groupId, int botCount) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    std::cout << "[소대 " << groupId << "] " << sockets.size() << "개 봇 연결 완료. 무한 이동 시작!\n";
+    std::cout << "[Group " << groupId << "] " << sockets.size() << "bots connected. Starting random movement.\n";
 
     // ★ 모던 C++의 스레드 독립적 난수 생성기 세팅 (스레드마다 다른 Seed 부여!)
     std::mt19937 rng(std::random_device{}() ^ (groupId + 12345));
-    std::uniform_real_distribution<float> distPos(0.0f, 240.0f); // 0~30 좌표
+    std::uniform_real_distribution<float> distPos(0.0f, 900.0f); // 0~30 좌표
     std::uniform_int_distribution<int> distDir(0, 1);           // 방향 0 또는 1
 
     // 2. 1:N 멀티플렉싱 흉내내기 (Polling 루프)
     char dumpBuffer[65535]; // 배수구 뚫기용 버퍼
+    auto lastMoveTime = std::chrono::steady_clock::now();
 
     while (true) {
+        auto now = std::chrono::steady_clock::now();
+        // 마지막으로 이동한 지 1초(1000ms)가 지났는지 체크!
+        bool shouldMove = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastMoveTime).count() >= 1000;
+
         for (SOCKET s : sockets) {
-            C2S_MovePacket movePkt;
-            movePkt.size = sizeof(C2S_MovePacket);
-            movePkt.id = 1;
-            movePkt.sessionId = 0;
+            if (shouldMove) {
+                C2S_MovePacket movePkt;
+                movePkt.size = sizeof(C2S_MovePacket);
+                movePkt.id = 1;
+                movePkt.sessionId = 0;
 
-            // ★ 더 이상 겹치지 않는 완벽한 독립 난수 좌표 생성!
-            movePkt.posX = distPos(rng);
-            movePkt.posY = distPos(rng);
-            movePkt.dirX = (distDir(rng) == 0) ? -1.0f : 1.0f;
-            movePkt.dirY = 0.0f;
+                movePkt.posX = distPos(rng);
+                movePkt.posY = distPos(rng);
+                movePkt.dirX = (distDir(rng) == 0) ? -1.0f : 1.0f;
+                movePkt.dirY = 0.0f;
 
-            ::send(s, (char*)&movePkt, sizeof(movePkt), 0);
+                ::send(s, (char*)&movePkt, sizeof(movePkt), 0);
+            }
 
+            // ★ 핵심: 이동을 하든 안 하든, 패킷 수신(recv)은 매 프레임마다 쉬지 않고 배수구를 뚫어줍니다!
             while (::recv(s, dumpBuffer, sizeof(dumpBuffer), 0) > 0) {}
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+        if (shouldMove) {
+            lastMoveTime = now;
+        }
+
+        // 스레드가 1초 동안 자는 것이 아니라, 10ms만 아주 짧게 숨을 고릅니다.
+        // 이렇게 하면 CPU 100%를 방지하면서도 수신 버퍼가 터지는 것을 완벽히 막을 수 있습니다.
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
     // 종료 시 소켓 정리
@@ -91,8 +105,8 @@ int main() {
     WSADATA wsaData;
     ::WSAStartup(MAKEWORD(2, 2), &wsaData);
 
-    const int TOTAL_BOTS = 1000;
-    const int BOTS_PER_THREAD = 100;  // 스레드 1개당 1000마리 관리!
+    const int TOTAL_BOTS = 5000;
+    const int BOTS_PER_THREAD = 250;  
     const int THREAD_COUNT = TOTAL_BOTS / BOTS_PER_THREAD;
 
     std::vector<std::thread> threads;

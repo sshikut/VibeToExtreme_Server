@@ -29,14 +29,14 @@ std::string GetWindowsErrorMessage(int errorCode) {
         }
         return result;
     }
-    return "알 수 없는 에러 (코드: " + std::to_string(errorCode) + ")";
+    return "Unknown error (Code:" + std::to_string(errorCode) + ")";
 }
 
 NetworkCore::NetworkCore()
     : m_iocpHandle(NULL), m_listenSocket(INVALID_SOCKET), m_running(false) {
     WSADATA wsaData;
     if (::WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        throw std::runtime_error("WSAStartup 실패");
+        throw std::runtime_error("WSAStartup failed");
     }
 }
 
@@ -49,13 +49,13 @@ NetworkCore::~NetworkCore() {
 
 void NetworkCore::InitializeIOCP() {
     m_iocpHandle = ::CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
-    if (m_iocpHandle == NULL) throw std::runtime_error("IOCP 생성 실패");
+    if (m_iocpHandle == NULL) throw std::runtime_error("Failed to create IOCP");
 }
 
 void NetworkCore::StartServer(uint16_t port) {
     // 1. 소켓 생성 및 Bind/Listen (복구 완료)
     m_listenSocket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (m_listenSocket == INVALID_SOCKET) throw std::runtime_error("Listen 소켓 생성 실패!");
+    if (m_listenSocket == INVALID_SOCKET) throw std::runtime_error("Failed to create listen socket");
 
     SOCKADDR_IN serverAddr = {};
     serverAddr.sin_family = AF_INET;
@@ -63,11 +63,11 @@ void NetworkCore::StartServer(uint16_t port) {
     serverAddr.sin_addr.s_addr = ::htonl(INADDR_ANY);
 
     if (::bind(m_listenSocket, (SOCKADDR*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
-        throw std::runtime_error("소켓 Bind 실패!");
+        throw std::runtime_error("Socket bind failed");
     }
 
     if (::listen(m_listenSocket, SOMAXCONN) == SOCKET_ERROR) {
-        throw std::runtime_error("소켓 Listen 실패!");
+        throw std::runtime_error("Socket listen failed");
     }
 
     // 2. 세션 매니저 초기화 (1만 개)
@@ -95,7 +95,7 @@ void NetworkCore::StartServer(uint16_t port) {
             // 3초마다 현재 남은 빈방 갯수를 콘솔에 출력합니다.
             size_t freeCount = m_sessionManager->GetAvailableSessionCount();
             std::cout << "\n=======================================" << std::endl;
-            std::cout << "[서버 상태] 남은 세션(빈방): " << freeCount << " / 10000" << std::endl;
+            std::cout << "[Server Status] Available Sessions: " << freeCount << " / 10000" << std::endl;
             std::cout << "=======================================\n" << std::endl;
 
             std::this_thread::sleep_for(std::chrono::seconds(3));
@@ -104,7 +104,7 @@ void NetworkCore::StartServer(uint16_t port) {
 }
 
 void NetworkCore::AcceptThreadMain() {
-    std::cout << "[System] Accept 스레드 가동. 클라이언트의 접속을 기다립니다..." << std::endl;
+    std::cout << "[System] Accept thread started. Waiting for clients..." << std::endl;
 
     while (m_running) {
         SOCKET clientSocket = ::accept(m_listenSocket, nullptr, nullptr);
@@ -112,7 +112,7 @@ void NetworkCore::AcceptThreadMain() {
 
         Session* session = m_sessionManager->Acquire();
         if (!session) {
-            std::cout << "🚨 [경고] 서버 인원 초과! 접속을 거절합니다." << std::endl;
+            std::cout << "[WARNING] Server full! Connection rejected." << std::endl;
             ::closesocket(clientSocket);
             continue;
         }
@@ -127,13 +127,13 @@ void NetworkCore::AcceptThreadMain() {
         if (!isSuccess) {
             // 악성 봇이 접속하자마자 끊고 도망간 최악의 상황!
             // 워커 스레드로 못 넘어가니, 여기서 직접 방 열쇠를 뺏어서 반납해야 합니다.
-            std::cout << "🚨 [경고] 접속 직후 연결 끊김 (유령 세션 방어!). 세션 즉시 반납!" << std::endl;
+            std::cout << "[WARNING] Connection dropped immediately after accept (Ghost session prevented). Session released." << std::endl;
             m_sessionManager->Release(session);
             ::closesocket(clientSocket);
         }
         else {
             // 정상적으로 대기열에 들어간 경우에만 성공으로 취급
-            std::cout << "🎉 접속 및 수신 대기 성공! 세션 인덱스: " << session->GetSessionId() << std::endl;
+            std::cout << "[INFO] Client connected and listening. Session ID: " << session->GetSessionId() << std::endl;
 
             // ==============================================================
             // 🎯 초기 동기화 (Initial Synchronization) 시작!
@@ -202,7 +202,7 @@ void NetworkCore::WorkerThreadMain() {
 
             if (session) {
                 int sessionId = session->GetSessionId();
-                std::cout << "[비정상 종료] 세션 " << sessionId << " 연결 해제." << std::endl;
+                std::cout << "[INFO] Session disconnected:" << sessionId << std::endl;
 
                 // ★ 1. 퇴장 패킷 브로드캐스트 (이제 O(N^2)가 아니라 내 주변 격자에게만 쏘면 됨!)
                 S2C_LeavePacket leavePkt;
@@ -225,7 +225,15 @@ void NetworkCore::WorkerThreadMain() {
 
         // 워커 스레드는 그저 "데이터가 n바이트 도착했어!" 라고 세션에게 알려주기만 하면 됩니다.
         if (session != nullptr) {
-            session->OnReceive(bytesTransferred, m_sessionManager.get());
+            // ★ 편지봉투(Context)의 꼬리표를 보고 분기 처리!
+            if (context->type == IOType::RECV) {
+                // 수신 완료 이벤트: 패킷을 뜯어보고 로직(이동, 브로드캐스팅) 처리
+                session->OnReceive(bytesTransferred, m_sessionManager.get());
+            }
+            else if (context->type == IOType::SEND) {
+                // 송신 완료 이벤트: 다음 패킷이 큐에 남아있는지 확인하고 이어서 쏘기
+                session->OnSendCompleted(bytesTransferred);
+            }
         }
     }
 }

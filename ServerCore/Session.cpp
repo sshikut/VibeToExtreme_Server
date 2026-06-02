@@ -1,7 +1,7 @@
 #include "Session.h"
 #include "SessionManager.h"
 
-Session::Session() : m_sessionId(-1), m_socket(INVALID_SOCKET), m_inUse(false) {}
+Session::Session() : m_sessionId(-1), m_socket(INVALID_SOCKET), m_inUse(false), m_isSending(false) {}
 
 Session::~Session() {
     if (m_socket != INVALID_SOCKET) {
@@ -14,6 +14,31 @@ void Session::Reset() {
     m_socket = INVALID_SOCKET;
     m_readPos = 0;
     m_writePos = 0;
+
+    // ★ 빈 방이 될 때 Send 큐도 깔끔하게 비웁니다.
+    std::lock_guard<std::mutex> lock(m_sendLock);
+    m_sendQueue.clear();
+    m_sendingBuffer.clear();
+    m_isSending = false;
+}
+
+bool Session::PostRecv() {
+    DWORD recvBytes = 0;
+    DWORD flags = 0;
+
+    ZeroMemory(&m_recvContext.overlapped, sizeof(m_recvContext.overlapped));
+    m_recvContext.type = IOType::RECV; // ★ "나는 수신용 편지봉투다!" 명시
+
+    m_recvContext.wsaBuf.buf = &m_recvBuffer[m_writePos];
+    m_recvContext.wsaBuf.len = BUFFER_SIZE - m_writePos;
+
+    if (::WSARecv(m_socket, &m_recvContext.wsaBuf, 1, &recvBytes, &flags, &m_recvContext.overlapped, nullptr) == SOCKET_ERROR) {
+        if (::WSAGetLastError() != WSA_IO_PENDING) {
+            std::cout << "[ERROR] WSARecv failed. Error Code: " << ::WSAGetLastError() << std::endl;
+            return false;
+        }
+    }
+    return true;
 }
 
 void Session::OnReceive(int bytesTransferred, SessionManager* manager) {
@@ -38,10 +63,14 @@ void Session::OnReceive(int bytesTransferred, SessionManager* manager) {
         // ----------------------------------------------------
         if (header->id == 1) // C2S_MOVE 수신!
         {
-            // (1만 명 접속 시 이 cout은 콘솔 창을 마비시키므로 주석 처리하는 것이 좋습니다)
-            // std::cout << "[서버] " << m_sessionId << "번 유저의 이동 패킷 수신!" << std::endl;
-
             C2S_MovePacket* movePkt = reinterpret_cast<C2S_MovePacket*>(&m_recvBuffer[m_readPos + sizeof(PacketHeader)]);
+
+            if (movePkt->sessionId != -999)
+            {
+                std::cout << "[INFO] User " << m_sessionId
+                    << " moved to (" << movePkt->posX << ", " << movePkt->posY << ")" << std::endl;
+            }
+
             movePkt->sessionId = m_sessionId;
             header->id = 2;
 
@@ -75,10 +104,65 @@ void Session::OnReceive(int bytesTransferred, SessionManager* manager) {
 }
 
 bool Session::Send(char* packet, int size) {
-    // 빈 방이거나 소켓이 끊겼으면 안 보냄
     if (!m_inUse || m_socket == INVALID_SOCKET) return false;
 
-    // 블로킹 동기 방식으로 일단 쏩니다 (현재 수준에서 가장 안전함)
-    int sent = ::send(m_socket, packet, size, 0);
-    return sent != SOCKET_ERROR;
+    bool expected = false;
+    {
+        // 1. 패킷을 무작정 쏘지 않고 내 큐(Queue)에 차곡차곡 쌓아둡니다.
+        std::lock_guard<std::mutex> lock(m_sendLock);
+        m_sendQueue.insert(m_sendQueue.end(), packet, packet + size);
+    }
+
+    // 2. 만약 지금 아무도 송신을 하고 있지 않다면, 내가 총대를 메고 송신을 시작(PostSend)합니다!
+    if (m_isSending.compare_exchange_strong(expected, true)) {
+        PostSend();
+    }
+    return true;
+}
+
+void Session::PostSend() {
+    // 큐에 쌓인 모든 패킷을 '실제 송신 버퍼'로 한 번에 옮깁니다. (Gather I/O)
+    {
+        std::lock_guard<std::mutex> lock(m_sendLock);
+        m_sendingBuffer = std::move(m_sendQueue);
+        m_sendQueue.clear();
+    }
+
+    ZeroMemory(&m_sendContext.overlapped, sizeof(m_sendContext.overlapped));
+    m_sendContext.type = IOType::SEND; // ★ "나는 송신용 편지봉투다!" 명시
+
+    m_sendContext.wsaBuf.buf = m_sendingBuffer.data();
+    m_sendContext.wsaBuf.len = static_cast<ULONG>(m_sendingBuffer.size());
+
+    DWORD sendBytes = 0;
+
+    // OS에게 "이 커다란 덩어리 한 번에 쏴줘!" 라고 비동기로 위임합니다.
+    if (::WSASend(m_socket, &m_sendContext.wsaBuf, 1, &sendBytes, 0, &m_sendContext.overlapped, nullptr) == SOCKET_ERROR) {
+        if (::WSAGetLastError() != WSA_IO_PENDING) {
+            // 에러가 나면 락을 풀고 송신 상태를 해제합니다.
+            m_isSending = false;
+        }
+    }
+}
+
+void Session::OnSendCompleted(int bytesTransferred) {
+    // 1. 수동으로 자물쇠를 잠급니다. (lock_guard는 블록 끝까지 안 풀리므로 직접 제어)
+    m_sendLock.lock();
+
+    // 2. 큐에 보낼 패킷이 더 남아있는지 확인합니다.
+    if (!m_sendQueue.empty()) {
+
+        // ★ 핵심: PostSend() 내부에서 다시 m_sendLock을 요구하므로, 
+        // 부르기 직전에 반드시 내가 쥐고 있던 자물쇠를 풀어줘야 데드락(Crash)이 발생하지 않습니다!
+        m_sendLock.unlock();
+
+        // 이제 안전하게 다음 송신을 위임합니다.
+        PostSend();
+
+    }
+    else {
+        // 더 이상 보낼 게 없다면 스위치를 끄고 자물쇠를 풉니다.
+        m_isSending = false;
+        m_sendLock.unlock();
+    }
 }

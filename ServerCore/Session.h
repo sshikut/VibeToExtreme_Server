@@ -3,6 +3,9 @@
 #include <cstdint>
 #include <WinSock2.h>
 #include <iostream>
+#include <vector>
+#include <mutex>
+#include <atomic>
 
 #pragma pack(push, 1)
 struct PacketHeader {
@@ -55,10 +58,13 @@ enum class PacketType : uint16_t {
     CRASH_BOMB = 999,
 };
 
+enum class IOType { RECV, SEND };
+
 // buffer 변수를 삭제하고 가볍게 만듭니다.
 struct OverlappedContext {
     WSAOVERLAPPED overlapped;
     WSABUF wsaBuf;
+    IOType type; // ★ 이 Context가 수신용인지 송신용인지 구분하는 꼬리표
 };
 
 class SessionManager;
@@ -70,6 +76,7 @@ public:
     void Reset();
 
     void OnReceive(int bytesTransferred, SessionManager* manager);
+    void OnSendCompleted(int bytesTransferred); // ★ 송신 완료 콜백
 
     void SetSessionId(int id) { m_sessionId = id; }
     int GetSessionId() const { return m_sessionId; }
@@ -78,27 +85,9 @@ public:
     void SetSocket(SOCKET s) { m_socket = s; m_inUse = true; }
 
     bool IsFree() const { return !m_inUse; }
-    OverlappedContext& GetReceiveContext() { return m_recvContext; }
 
-    // 비동기 수신 대기
-    bool PostRecv() {
-        DWORD recvBytes = 0;
-        DWORD flags = 0;
-
-        ZeroMemory(&m_recvContext.overlapped, sizeof(m_recvContext.overlapped));
-
-        // ★ 핵심: OS에게 "내 recvBuffer의 writePos 위치부터 빈 공간만큼 데이터를 채워줘!" 라고 부탁합니다.
-        m_recvContext.wsaBuf.buf = &m_recvBuffer[m_writePos];
-        m_recvContext.wsaBuf.len = BUFFER_SIZE - m_writePos;
-
-        if (::WSARecv(m_socket, &m_recvContext.wsaBuf, 1, &recvBytes, &flags, &m_recvContext.overlapped, nullptr) == SOCKET_ERROR) {
-            if (::WSAGetLastError() != WSA_IO_PENDING) {
-                std::cout << "🚨 WSARecv 에러 발생: " << ::WSAGetLastError() << std::endl;
-                return false;
-            }
-        }
-        return true;
-    }
+    bool PostRecv();
+    void PostSend(); // ★ 비동기 송신 위임 함수
 
     bool Send(char* packet, int size);
 
@@ -111,15 +100,22 @@ public:
 
 private:
     OverlappedContext m_recvContext;
+    OverlappedContext m_sendContext; // ★ 송신 전용 컨텍스트 추가
+
     int m_sessionId;
     SOCKET m_socket;
     bool m_inUse;
 
-    // ★ 질문 1에 대한 답변: 각 세션이 자기만의 버퍼와 커서를 가져야 합니다.
     static const int BUFFER_SIZE = 65535;
     char m_recvBuffer[BUFFER_SIZE];
     int m_readPos;
     int m_writePos;
+
+    // ★ 비동기 Send Queue 자원들
+    std::mutex m_sendLock;
+    std::vector<char> m_sendQueue;     // 스레드들이 패킷을 쌓아두는 큐
+    std::vector<char> m_sendingBuffer; // 현재 OS가 네트워크 카드로 쏘고 있는 버퍼
+    std::atomic<bool> m_isSending;     // 현재 송신 중인지 여부
 
     float m_posX = 0.0f;
     float m_posY = 0.0f;
